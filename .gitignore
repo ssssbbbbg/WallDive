@@ -1,0 +1,17 @@
+.build/
+.swiftpm/
+build/
+dist/
+DerivedData/
+.DS_Store
+*.xcuserstate
+**/xcuserdata/
+*.mobileprovision
+*.p12
+*.cer
+*.ipa
+*.dSYM
+*.dSYM.zip
+*.app
+*.dmg
+*.zip
