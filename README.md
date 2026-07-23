@@ -26,7 +26,7 @@ WallDive 是一个使用 SwiftUI 构建的非官方 Wallhaven 客户端。macOS 
 
 | macOS | iOS |
 | --- | --- |
-| ![WallDive macOS](Docs/Screenshots/macos-home.png) | ![WallDive iOS](Docs/Screenshots/ios-filter.png) |
+| ![WallDive macOS](Docs/Screenshots/macos-home.png) | ![WallDive iOS](Docs/Screenshots/ios-home.png) |
 
 ## 主要功能
 
