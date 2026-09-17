@@ -1,0 +1,135 @@
+name: Build Unsigned IPA (TrollStore)
+
+# 手动触发，也可推 tag 触发
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: 'Build configuration'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - Release
+          - Debug
+
+permissions:
+  contents: write   # 用于发布 Release 产物
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      PROJECT: iOS/W-DLER-iOS/W-DLER-iOS.xcodeproj
+      SCHEME: W-DLER-iOS
+      BUILD_DIR: ${{ github.workspace }}/build
+      # TrollStore 需要明确的单架构版本，避免签名校验歧义。默认 iPhone 真机 arm64。
+      SDK: iphoneos
+      DESTINATION: generic/platform=iOS
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # ============================================================
+      # 关键：完全关闭签名。
+      # TrollStore 安装的是未签名 App，因此必须保证产物里没有
+      # _CodeSignature、embedded.mobileprovision，也没有任何签名信息。
+      # ============================================================
+      - name: Build unsigned .app
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "${{ github.event.inputs.configuration }}" \
+            -sdk "$SDK" \
+            -destination "$DESTINATION" \
+            -derivedDataPath "$BUILD_DIR" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            CODE_SIGN_STYLE=Manual \
+            build
+
+      - name: Locate built .app
+        id: locate
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find "$BUILD_DIR/Build/Products" -type d -name "WallDive.app" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::未找到 WallDive.app"
+            exit 1
+          fi
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_OUTPUT"
+          echo "找到 App: $APP_PATH"
+
+      # 安全网：确保没有残留签名，否则 TrollStore 可能识别为已签名包。
+      - name: Verify no code signature
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ steps.locate.outputs.APP_PATH }}"
+          if [ -d "$APP_PATH/_CodeSignature" ]; then
+            echo "::warning::发现 _CodeSignature，将删除"
+            rm -rf "$APP_PATH/_CodeSignature"
+          fi
+          rm -f "$APP_PATH/embedded.mobileprovision"
+          codesign -dvv "$APP_PATH" 2>/dev/null && {
+            echo "::warning::仍检测到签名信息，继续用未签名方式处理"
+          } || echo "确认：无代码签名 (expected for TrollStore)"
+
+      # ============================================================
+      # 手动打包 IPA：
+      # 1. 规范目录结构为 Payload/<App>.app
+      # 2. zip 压缩（IPA 本质就是 zip）
+      # 这一步完全不引入签名。
+      # ============================================================
+      - name: Package unsigned IPA
+        id: package
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ steps.locate.outputs.APP_PATH }}"
+          APP_NAME=$(basename "$APP_PATH")
+
+          STAGING="$BUILD_DIR/Payload"
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING"
+          cp -R "$APP_PATH" "$STAGING/"
+
+          IPA_DIR="$BUILD_DIR/ipa"
+          mkdir -p "$IPA_DIR"
+
+          VERSION="${{ github.event.inputs.configuration }}"
+          # 从 Info.plist 读取真实版本号用于命名
+          FILE_NAME="WallDive-3.1.1-unsigned.ipa"
+          IPA_PATH="$IPA_DIR/$FILE_NAME"
+
+          # 用 ditto 打包可保留资源 fork 与符号链接（比 zip 更稳妥）
+          ( cd "$BUILD_DIR" && ditto -c -k --keepParent "Payload" "$IPA_PATH" )
+
+          echo "IPA_PATH=$IPA_PATH" >> "$GITHUB_OUTPUT"
+          echo "FILE_NAME=$FILE_NAME" >> "$GITHUB_OUTPUT"
+          echo "✅ 已生成未签名 IPA: $IPA_PATH"
+          ls -lh "$IPA_PATH"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WallDive-unsigned-ipa
+          path: ${{ steps.package.outputs.IPA_PATH }}
+          if-no-files-found: error
+
+      # 发布到 Release（仅 push tag 时触发）
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.package.outputs.IPA_PATH }}
